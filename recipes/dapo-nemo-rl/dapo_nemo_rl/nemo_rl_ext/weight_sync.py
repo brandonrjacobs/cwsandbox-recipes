@@ -1,8 +1,8 @@
 """Hot-load new weights into the Dedicated Inference deployment after each training step.
 
 1. The policy workers export the weights as safetensors (rank 0 writes them).
-2. The trainer uploads them as a full snapshot to the deployment's hot-load bucket.
-3. A hot-load swaps the weights on every replica. The trainer waits until it completes.
+2. ``cwtrain.HotLoader`` uploads them as a full snapshot to the deployment's hot-load bucket
+   and creates a hot-load, which swaps the weights on every replica. The trainer waits for it.
 
 GRPO is synchronous, so no rollout runs during this. The next rollout uses the new weights.
 """
@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from nemo_rl.weight_sync.interfaces import WeightSynchronizer
 
-from dapo_nemo_rl.hotload import HotLoadClient, add_model_files, checkpoint_dtypes
+from dapo_nemo_rl import caios
+from dapo_nemo_rl.hotload import add_model_files, checkpoint_dtypes
 
 
 class HotLoadWeightSynchronizer(WeightSynchronizer):
@@ -32,7 +33,9 @@ class HotLoadWeightSynchronizer(WeightSynchronizer):
         self.dtypes = checkpoint_dtypes(self.base)
         self.export_dir = Path(export_dir or os.environ.get("REFIT_EXPORT_DIR", "/work/refit"))
         self.run_id = cfg["run_id"]
-        self.client = HotLoadClient(token, cfg["deployment_id"], cfg["bucket"], cfg["path_prefix"])
+        from cwtrain import HotLoader, InferenceClient
+
+        self.loader = HotLoader(InferenceClient(token=token), cfg["deployment_id"], s3=caios.client())
         self._version = 0
         self._stale = True
         print(f"[dapo] weight sync: {len(self.dtypes)} tensors -> deployment {cfg['deployment_id']}", flush=True)
@@ -68,15 +71,21 @@ class HotLoadWeightSynchronizer(WeightSynchronizer):
         rank0 = next(r for r in results if r["rank"] == 0)
         exported = time.perf_counter()
         with timed("hot_load"):
-            timing = self.client.publish(path, self.identity(version))
+            from cwtrain.infra.models import PromptCachePolicy
+
+            # GRPO is on-policy: drop KV cache computed with the old weights.
+            self.loader.publish(path, self.identity(version), prompt_cache_policy=PromptCachePolicy.RESET_ALL)
+        loaded = time.perf_counter()
         shutil.rmtree(path, ignore_errors=True)
         if self._version:
             # Each snapshot is full, so the replicas no longer need the previous one.
-            self.client.delete(self.identity(self._version))
+            hot_load = self.loader.deployment.hot_load
+            prefix = f"{hot_load.path_prefix.strip('/')}/{self.identity(self._version)}"
+            caios.delete_prefix(self.loader.s3, hot_load.bucket, prefix)
         self._version = version
         self._stale = False
         print(
             f"[dapo] hot-load v{version}: {rank0['tensors']} tensors, {rank0['bytes'] / 2**30:.1f} GiB; "
-            f"export {exported - started:.0f}s, upload {timing['upload_s']:.0f}s, load {timing['load_s']:.0f}s",
+            f"export {exported - started:.0f}s, upload and load {loaded - exported:.0f}s",
             flush=True,
         )

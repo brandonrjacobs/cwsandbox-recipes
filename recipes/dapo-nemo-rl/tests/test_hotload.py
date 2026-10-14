@@ -1,9 +1,10 @@
-"""Hot-load client, snapshot files and the Gym token-ID adapter, with fakes for the API and storage."""
+"""Snapshot files, the cwtrain wrapper and the Gym token-ID adapter, with fakes for the API."""
 
 import json
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,46 +38,6 @@ def test_checkpoint_dtypes_and_model_files(tmp_path):
     assert sorted(p.name for p in export.iterdir()) == ["config.json", "tokenizer.json"]
 
 
-class FakeAPI(hotload.HotLoadClient):
-    def __init__(self, responses):
-        super().__init__("token", "dep-1", "bucket", "/runs/x/hotload/", s3=object())
-        self.responses, self.sent = list(responses), []
-
-    def request(self, method, path, body=None):
-        self.sent.append((method, path, body))
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-def test_create_retries_busy_deployment_then_waits(monkeypatch):
-    monkeypatch.setattr(hotload.time, "sleep", lambda s: None)
-    api = FakeAPI([
-        hotload.HotLoadError("POST /hotLoads: HTTP 400: hot-load already in progress"),
-        {"hotLoad": {"spec": {"id": "hl-1"}}},
-        {"hotLoad": {"status": {"state": "HOT_LOAD_STATE_IN_PROGRESS"}}},
-        {"hotLoad": {"status": {"state": "HOT_LOAD_STATE_COMPLETED"}}},
-    ])  # fmt: skip
-    assert api.create("run-v000001") == "hl-1"
-    body = api.sent[0][2]
-    assert body["type"] == "SNAPSHOT_TYPE_FULL" and body["identity"] == "run-v000001"
-    assert (
-        body["promptCachePolicy"] == "PROMPT_CACHE_POLICY_RESET_ALL"
-        and body["hotLoadId"] == api.sent[1][2]["hotLoadId"]
-    )
-    api.wait("hl-1")
-    assert api.snapshot_prefix("run-v000001") == "runs/x/hotload/run-v000001"
-
-
-def test_failed_hot_load_and_bad_requests_raise(monkeypatch):
-    monkeypatch.setattr(hotload.time, "sleep", lambda s: None)
-    with pytest.raises(hotload.HotLoadError, match="FAILED"):
-        FakeAPI([{"hotLoad": {"status": {"state": "HOT_LOAD_STATE_FAILED", "conditions": ["bad shard"]}}}]).wait("hl")
-    with pytest.raises(hotload.HotLoadError, match="403"):
-        FakeAPI([hotload.HotLoadError("HTTP 403: forbidden")]).create("run-v000001")
-
-
 def test_deployment_spec_enables_hot_load():
     spec = deployment_spec("run", "gw", "bucket", "p/base", "p/hotload", DeploymentSettings(replicas=3))
     assert spec["hotLoad"] == {"bucket": "bucket", "pathPrefix": "p/hotload", "transitionMode": "TRANSITION_MODE_ASYNC"}
@@ -84,17 +45,29 @@ def test_deployment_spec_enables_hot_load():
     assert spec["runtime"]["engineConfig"]["max-model-len"] == "3072"
 
 
-def test_inference_waits_for_all_replicas():
-    states = iter(["Ready replicas: 0/2", "Ready replicas: 2/2. All resources are ready"])
+def test_inference_creates_and_deletes_with_cwtrain(monkeypatch):
+    from cwtrain.infra import lifecycle
 
-    def cwic(args):
-        if args[:3] == ["inference", "deployment", "get"]:
-            return json.dumps(
-                {"status": {"status": "STATUS_READY", "conditions": [{"type": "Ready", "message": next(states)}]}}
-            )
-        raise AssertionError(args)
-
-    Inference(cwic, sleep=lambda s: None).wait_deployment("dep", 2)
+    calls = []
+    client = SimpleNamespace(
+        create_gateway=lambda spec: calls.append(("gateway", spec)) or SimpleNamespace(id="gw"),
+        create_deployment=lambda spec: SimpleNamespace(id="dep"),
+    )
+    monkeypatch.setattr(
+        lifecycle, "wait_for_gateway", lambda c, gid: SimpleNamespace(id=gid, endpoints=("https://gw",))
+    )
+    monkeypatch.setattr(lifecycle, "wait_for_deployment", lambda c, did: calls.append(("ready", did)))
+    monkeypatch.setattr(lifecycle, "delete_deployment", lambda c, did, timeout: calls.append(("delete", did)))
+    monkeypatch.setattr(lifecycle, "delete_gateway", lambda c, gid: calls.append(("delete", gid)))
+    inference = Inference(client, cwic=lambda args: json.dumps({"location": "US-EAST-02A"}))
+    assert inference.create_gateway("run", "US-WEST-04A") == ("gw", "https://gw")
+    assert calls[0][1]["zones"] == ["US-WEST-04A"] and "coreWeaveAuth" in calls[0][1]
+    assert inference.create_deployment({}) == "dep"
+    inference.wait_deployment("dep")
+    inference.delete_deployment("dep")
+    inference.delete_gateway("gw")
+    assert calls[1:] == [("ready", "dep"), ("delete", "dep"), ("delete", "gw")]
+    assert inference.bucket_zone("b") == "US-EAST-02A"
 
 
 class FakeTokenizer:

@@ -42,7 +42,7 @@ MODEL_DIR = Path("/work/models/base")
 DATA_DIR = Path("/work/data")
 CALIBRATION_REPORT = Path("/work/logs/calibration.json")
 JOB_DIR = Path("/job")
-BOTO3 = "boto3==1.40.61"
+CWTRAIN = "cwtrain==0.1.0"
 
 
 def apply_patches() -> None:
@@ -71,9 +71,9 @@ def expose_recipe_to_worker_venvs() -> None:
         Path(purelib, "dapo_nemo_rl.pth").write_text(f"{WORKSPACE}\n")
 
 
-def install_boto3() -> None:
-    """The weight synchronizer uploads snapshots with boto3, which the image lacks."""
-    run(["uv", "pip", "install", "--quiet", "--python", sys.executable, BOTO3])
+def install_cwtrain() -> None:
+    """The weight synchronizer hot-loads with cwtrain, which the image lacks."""
+    run(["uv", "pip", "install", "--quiet", "--python", sys.executable, CWTRAIN])
 
 
 def stage_model() -> None:
@@ -117,7 +117,7 @@ def main(argv: list[str]) -> int:
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     log(f"trainer: patching NeMo-RL in {NEMO_RL_DIR}")
-    install_boto3()
+    install_cwtrain()
     apply_patches()
     expose_recipe_to_worker_venvs()
     model_prep.prepare(require("MODEL_REPO"), require("MODEL_REVISION"), MODEL_DIR)

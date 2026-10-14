@@ -1,34 +1,23 @@
 """CoreWeave AI Object Storage (CAIOS) helpers: upload, copy and delete under a prefix.
 
-Uses boto3 with the ``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` of a CAIOS access key.
-``AWS_REGION`` is the bucket's zone. The trainer and the launcher both use this module.
+The client comes from ``cwtrain`` and uses the ``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY``
+of a CAIOS access key; ``AWS_REGION`` is the bucket's zone. The trainer and the launcher both use
+this module.
 """
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-ENDPOINT = "https://cwobject.com"
 DONE_MARKER = "_COMPLETE"  # written last, so a partial upload is never taken as done
 
 
 def client(region: str | None = None) -> Any:
-    import boto3
-    from botocore.config import Config
+    from cwtrain.infra.storage import s3_client
 
-    return boto3.client(
-        "s3",
-        endpoint_url=os.environ.get("CW_S3_ENDPOINT", ENDPOINT),
-        region_name=region or os.environ["AWS_REGION"],
-        config=Config(
-            s3={"addressing_style": "virtual"},
-            retries={"max_attempts": 8, "mode": "adaptive"},
-            max_pool_connections=64,
-        ),
-    )
+    return s3_client(region_name=region)
 
 
 def keys(s3: Any, bucket: str, prefix: str) -> list[str]:

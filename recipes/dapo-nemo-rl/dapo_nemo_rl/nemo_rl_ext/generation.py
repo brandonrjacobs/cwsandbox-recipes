@@ -7,7 +7,7 @@ Config, under ``policy.generation.hotload_cfg``:
 
 * ``base_url``: the deployment's OpenAI URL (its gateway endpoint), ending in ``/v1``.
 * ``model``: the served model name.
-* ``deployment_id``, ``bucket``, ``path_prefix``: the deployment and its ``hotLoad`` settings.
+* ``deployment_id``: the deployment. Its bucket and prefix for snapshots come from the API.
 * ``run_id``: prefix of every hot-load identity (``<run_id>-v000001``, ...).
 * ``max_model_len``: the deployment's ``max-model-len``.
 """
@@ -18,7 +18,7 @@ from typing import Any
 
 from nemo_rl.models.generation.interfaces import GenerationInterface
 
-REQUIRED = ("base_url", "model", "deployment_id", "bucket", "path_prefix", "run_id")
+REQUIRED = ("base_url", "model", "deployment_id", "run_id")
 
 
 class HotLoadGeneration(GenerationInterface):

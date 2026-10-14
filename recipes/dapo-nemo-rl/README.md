@@ -10,7 +10,7 @@ Train [Qwen2.5-Math-7B](https://huggingface.co/Qwen/Qwen2.5-Math-7B) with DAPO o
 
 - RL training on SUNK with rollouts from a Dedicated Inference deployment
 - Checkpoint hot-load: the trainer uploads each new policy to CoreWeave AI Object Storage and swaps it into the running deployment
-- `cwic` creates the gateway, the deployment and a temporary storage key for the run, and deletes them at the end
+- [`cwtrain`](https://pypi.org/project/cwtrain/) creates the gateway and the deployment and runs every hot-load; `cwic` creates a temporary storage key. The launcher deletes all of them at the end
 - NeMo-Gym's sandbox API with a CoreWeave provider: evaluation and verifier calibration run in CPU sandboxes
 - DAPO in NeMo-RL: clip-higher, dynamic sampling, token-level loss, overlong reward shaping
 
@@ -36,19 +36,19 @@ flowchart LR
         gym --> grade
     end
 
-    host -->|"cwic: gateway, deployment, key"| di
+    host -->|"cwtrain: gateway, deployment"| di
     host -->|"ssh: sbatch, logs"| sunk
     host -->|"cwsandbox: start"| gym
     rl -->|"rollout requests (Tailcat)"| gym
     gym -->|"generate (HTTPS)"| gw
     rl -->|"weights, each step"| bucket
-    rl -->|"hot-load API"| dep
+    rl -->|"cwtrain: hot-load"| dep
     bucket --> dep
 ```
 
 Each training step:
 
-1. **Send weights.** The trainer exports the policy (14 GiB) and uploads it as a full snapshot to the bucket. A hot-load swaps it into both replicas. The trainer waits until every replica serves it.
+1. **Send weights.** The trainer exports the policy (14 GiB). `cwtrain`'s `HotLoader` uploads it as a full snapshot to the bucket and hot-loads it into both replicas. The trainer waits until every replica serves it.
 2. **Roll out.** NeMo-RL sends each math problem to the Gym training agent. Gym samples answers from the deployment and scores them with math-verify.
 3. **Train.** NeMo-RL runs a GRPO step with the DAPO settings in [`config/grpo_dapo_qwen.yaml`](config/grpo_dapo_qwen.yaml).
 
@@ -72,7 +72,7 @@ Evaluation and calibration use a second Gym agent, `math_eval_agent`. Its server
 - A CoreWeave API access token from the [Tokens page](https://console.coreweave.com/tokens) with access to sandboxes and Inference (hot-load needs the Inference Admin role).
 - [RL Rollouts](https://docs.coreweave.com/products/inference/rl-rollouts) (hot-load) enabled for your organization, and H100 capacity for Dedicated Inference in the gateway zone (default `US-WEST-04A`).
 - A bucket the inference service can read, for example `gradient-hotloading`. Its [bucket policy](https://docs.coreweave.com/products/inference/models#grant-inference-access-to-your-bucket) must let the inference service read the recipe's prefix (default `cookbook/dapo-nemo-rl/`).
-- `cwic` (logged in), `rsync`, Python 3.11-3.13 and [uv](https://docs.astral.sh/uv/).
+- `cwic` (logged in), `rsync`, Python 3.12-3.13 and [uv](https://docs.astral.sh/uv/).
 - Optional: a [W&B](https://wandb.ai) API key for metrics.
 
 The first run imports the NeMo-RL image on SUNK, which takes about 50 minutes, and uploads the model to the bucket. Later runs use the caches.
@@ -118,11 +118,11 @@ Expected output (abridged):
 [dapo] calibration: boxed_correct   100% graded as expected (79 cases)
 [dapo] trainer: starting GRPO (DAPO) on 8 GPUs, rollouts from https://dapo-nemo-rl-....gw.cwinference.com/v1
 ========================= Step 1/2 =========================
-[dapo] hot-load v1: 339 tensors, 14.2 GiB; export 34s, upload 40s, load 40s
+[dapo] hot-load v1: 339 tensors, 14.2 GiB; export 33s, upload and load 64s
   • Generation KL Error: 0.0005
-  • Total step time: 166.91s
+  • Total step time: 129.75s
 ...
-  • Accuracy: 0.0500
+  • Accuracy: 0.1083
 [dapo] sunk: job ... COMPLETED
 [dapo] trainer exited with 0
 [dapo] inference: deployment ... deleted
@@ -169,7 +169,7 @@ Delete the runner when you no longer need it: `cwic sandbox runner delete <runne
 ## Limits
 
 - **Hot-load is in preview** and must be enabled for the organization.
-- **Full snapshots.** Each step uploads the full 14 GiB checkpoint (about 40 seconds from SUNK), and the hot-load takes about 45 seconds more. Smaller delta snapshots would cut this; the recipe keeps full ones for simplicity. The trainer deletes the previous snapshot after each hot-load.
+- **Full snapshots.** Each step uploads the full 14 GiB checkpoint and hot-loads it, which takes about 65 seconds from SUNK. Smaller delta snapshots would cut this; the recipe keeps full ones for simplicity. The trainer deletes the previous snapshot after each hot-load.
 - **Tailcat is experimental.** Its public relays are rate-limited and have no SLA. Tunnel traffic is encrypted, but it may go through public relays.
 - **No authentication in Gym.** Gym listens on localhost in its sandbox. Only the tunnel reaches it, and the tunnel address is a secret.
 
@@ -179,15 +179,15 @@ Delete the runner when you no longer need it: `cwic sandbox runner delete <runne
 python -m pytest -q
 ```
 
-The tests use fakes for the sandbox SDK, the SUNK login node, `cwic`, the hot-load API and object storage. Set `NEMO_RL_SRC` to a NeMo-RL v0.7.0 checkout to also check that the patches apply.
+The tests use fakes for the sandbox SDK, the SUNK login node, `cwic`, the `cwtrain` client and object storage. Set `NEMO_RL_SRC` to a NeMo-RL v0.7.0 checkout to also check that the patches apply.
 
 ## Layout
 
 ```
 dapo_nemo_rl/launch.py        start the run: storage key, gateway, Gym sandbox, SUNK job, deployment, cleanup
-dapo_nemo_rl/inference.py     cwic wrapper: gateway, hot-load deployment, storage key
+dapo_nemo_rl/inference.py     gateway and hot-load deployment (cwtrain), storage key (cwic)
 dapo_nemo_rl/caios.py         object storage upload, copy and delete
-dapo_nemo_rl/hotload.py       hot-load API client and snapshot files
+dapo_nemo_rl/hotload.py       snapshot files for hot-load
 dapo_nemo_rl/sunk.py          ssh and Slurm helpers for the SUNK login node
 dapo_nemo_rl/sunk_job.py      Slurm batch script: image import, tunnel, trainer step
 dapo_nemo_rl/tunnel.py        Tailcat install, serve and forward

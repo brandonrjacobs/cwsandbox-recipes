@@ -134,8 +134,8 @@ class FakeInference:
         self.spec = spec
         return "dep-1"
 
-    def wait_deployment(self, deployment_id, replicas):
-        self.calls.append(("ready", deployment_id, replicas))
+    def wait_deployment(self, deployment_id):
+        self.calls.append(("ready", deployment_id))
 
     def delete_deployment(self, deployment_id):
         self.calls.append(("delete deployment", deployment_id))
@@ -194,7 +194,7 @@ def test_run_wires_gym_sunk_job_and_deployment():
     spec = inference.spec
     assert spec["model"] == {"name": tag, "bucket": "gradient-hotloading", "path": f"{prefix}/base"}
     assert spec["hotLoad"]["pathPrefix"] == f"{prefix}/hotload" and spec["runtime"]["engine"] == "dynamo-vllm"
-    assert spec["gatewayIds"] == ["gw-1"] and ("ready", "dep-1", 2) in inference.calls
+    assert spec["gatewayIds"] == ["gw-1"] and ("ready", "dep-1") in inference.calls
     # Both sides got the endpoint, privately on SUNK.
     endpoint = gym.files["/workspace/run/inference.env"].decode()
     assert "INFERENCE_BASE_URL=https://gw.example/v1" in endpoint and "HOTLOAD_DEPLOYMENT_ID=dep-1" in endpoint

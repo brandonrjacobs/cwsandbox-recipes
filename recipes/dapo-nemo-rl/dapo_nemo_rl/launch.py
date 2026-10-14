@@ -1,7 +1,7 @@
 """Start a training run: NeMo-RL on SUNK, rollouts from CoreWeave Dedicated Inference,
 NeMo-Gym in a CoreWeave CPU sandbox.
 
-1. Create a temporary object storage key and an inference gateway (``cwic``).
+1. Create a temporary object storage key (``cwic``) and an inference gateway (``cwtrain``).
 2. Start the Gym sandbox. It serves its agent ports through a Tailcat tunnel.
 3. Copy the recipe to SUNK and submit a Slurm job (``sunk_job``). The trainer stages the base
    model in the bucket.
@@ -111,18 +111,9 @@ def create_with_retry(create: Callable[[], Any], what: str, timeout: float = 900
 
 
 def s3_client(key: dict[str, str], region: str) -> Any:
-    import boto3
+    from cwtrain.infra.storage import s3_client
 
-    from dapo_nemo_rl.caios import ENDPOINT
-
-    return boto3.client(
-        "s3",
-        endpoint_url=ENDPOINT,
-        region_name=region,
-        aws_access_key_id=key["accessKeyID"],
-        aws_secret_access_key=key["secretKey"],
-        config=boto3.session.Config(s3={"addressing_style": "virtual"}),
-    )
+    return s3_client(region_name=region, aws_access_key_id=key["accessKeyID"], aws_secret_access_key=key["secretKey"])
 
 
 class Launcher:
@@ -140,7 +131,11 @@ class Launcher:
         self.config = config
         self.sdk = sdk
         self.sunk = config.sunk
-        self.inference = inference or Inference()
+        if inference is None:
+            from cwtrain import InferenceClient
+
+            inference = Inference(InferenceClient(token=config.api_token))
+        self.inference = inference
         self.s3_factory = s3_factory
         self.sink = sink or (lambda line: print(line, end="", flush=True))
         self.run_tag = f"{RECIPE_TAG}-{uuid.uuid4().hex[:8]}"
@@ -175,7 +170,7 @@ class Launcher:
         )  # fmt: skip
         self.deployment_id = self.inference.create_deployment(spec)
         log(f"inference: deployment {self.deployment_id} requested ({settings.replicas} x {settings.instance_type})")
-        self.inference.wait_deployment(self.deployment_id, settings.replicas)
+        self.inference.wait_deployment(self.deployment_id)
         log("inference: deployment ready")
 
     def inference_env(self) -> bytes:
@@ -259,7 +254,6 @@ class Launcher:
             "AWS_SECRET_ACCESS_KEY": self.access_key["secretKey"],
             "AWS_REGION": self.bucket_zone,
             "HOTLOAD_BUCKET": self.config.bucket,
-            "HOTLOAD_PATH_PREFIX": f"{self.run_prefix}/hotload",
             "MODEL_CACHE_PREFIX": self.model_cache_prefix,
             "MODEL_RUN_PREFIX": f"{self.run_prefix}/base",
             **self.config.env,

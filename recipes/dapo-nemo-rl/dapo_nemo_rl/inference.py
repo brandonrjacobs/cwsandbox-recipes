@@ -1,18 +1,16 @@
-"""Dedicated Inference and object storage resources for one run, managed with ``cwic``.
+"""Dedicated Inference and object storage resources for one run.
 
 The launcher uses this module to create, and at the end delete:
 
-* an inference gateway (the HTTPS endpoint Gym calls),
-* a hot-load deployment of the base model behind it,
-* a temporary object storage access key for the SUNK trainer.
+* an inference gateway (the HTTPS endpoint Gym calls) and a hot-load deployment of the base
+  model behind it, with ``cwtrain`` (the Dedicated Inference client library),
+* a temporary object storage access key for the SUNK trainer, with ``cwic``.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
-import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -58,64 +56,45 @@ def deployment_spec(
 
 
 class Inference:
-    def __init__(self, cwic: Runner = run_cwic, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    """``client`` is a ``cwtrain.InferenceClient`` (a fake in tests); ``cwic`` runs the CLI."""
+
+    def __init__(self, client: Any, cwic: Runner = run_cwic) -> None:
+        self.client = client
         self.cwic = cwic
-        self.sleep = sleep
+
+    # ------------------------------------------------------- gateway, deployment
+
+    def create_gateway(self, name: str, zone: str) -> tuple[str, str]:
+        """Create a gateway with CoreWeave auth. Return (id, https endpoint) once READY."""
+        from cwtrain.infra import lifecycle
+
+        spec = {"name": name, "zones": [zone], "coreWeaveAuth": {}, "bodyBasedRouting": {"apiType": "API_TYPE_OPENAI"}}
+        gateway = lifecycle.wait_for_gateway(self.client, self.client.create_gateway(spec).id)
+        return gateway.id, gateway.endpoints[0]
+
+    def create_deployment(self, spec: dict[str, Any]) -> str:
+        return self.client.create_deployment(spec).id
+
+    def wait_deployment(self, deployment_id: str) -> None:
+        from cwtrain.infra import lifecycle
+
+        lifecycle.wait_for_deployment(self.client, deployment_id)
+
+    def delete_deployment(self, deployment_id: str) -> None:
+        """Delete and wait until it is gone, so its gateway can be deleted next."""
+        from cwtrain.infra import lifecycle
+
+        lifecycle.delete_deployment(self.client, deployment_id, timeout=900)
+
+    def delete_gateway(self, gateway_id: str) -> None:
+        from cwtrain.infra import lifecycle
+
+        lifecycle.delete_gateway(self.client, gateway_id)
+
+    # ----------------------------------------------------------- object storage
 
     def json(self, *args: str) -> Any:
         return json.loads(self.cwic([*args, "-o", "json"]))
-
-    # ------------------------------------------------------------------ gateway
-
-    def create_gateway(self, name: str, zone: str, *, timeout: float = 900) -> tuple[str, str]:
-        """Create a gateway with CoreWeave auth. Return (id, https endpoint) once READY."""
-        gateway_id = self.json("inference", "gateway", "create", "--name", name, "--zones", zone)["spec"]["id"]
-        gateway = self.wait("gateway", gateway_id, lambda g: g["status"].get("status") == "STATUS_READY", timeout)
-        return gateway_id, gateway["status"]["endpoints"][0]
-
-    def delete_gateway(self, gateway_id: str) -> None:
-        self.cwic(["inference", "gateway", "delete", gateway_id])
-
-    # --------------------------------------------------------------- deployment
-
-    def create_deployment(self, spec: dict[str, Any]) -> str:
-        with tempfile.NamedTemporaryFile("w", suffix=".json") as fh:
-            json.dump(spec, fh)
-            fh.flush()
-            return self.json("inference", "deployment", "create", "-f", fh.name)["spec"]["id"]
-
-    def wait_deployment(self, deployment_id: str, replicas: int, *, timeout: float = 3600) -> dict[str, Any]:
-        def ready(d: dict[str, Any]) -> bool:
-            status = d["status"]
-            if status.get("status") in ("STATUS_FAILED", "STATUS_ERROR"):
-                raise RuntimeError(f"deployment {deployment_id} {status.get('status')}: {status.get('conditions')}")
-            messages = [c.get("message", "") for c in status.get("conditions", []) if c.get("type") == "Ready"]
-            return status.get("status") == "STATUS_READY" and any(f"{replicas}/{replicas}" in m for m in messages)
-
-        return self.wait("deployment", deployment_id, ready, timeout)
-
-    def delete_deployment(self, deployment_id: str, *, timeout: float = 900) -> None:
-        """Delete and wait until it is gone, so its gateway can be deleted next."""
-        self.cwic(["inference", "deployment", "delete", deployment_id])
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                self.json("inference", "deployment", "get", deployment_id)
-            except RuntimeError:  # not found
-                return
-            self.sleep(15)
-
-    def wait(self, kind: str, rid: str, done: Callable[[dict[str, Any]], bool], timeout: float) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        while True:
-            obj = self.json("inference", kind, "get", rid)
-            if done(obj):
-                return obj
-            if time.monotonic() > deadline:
-                raise RuntimeError(f"{kind} {rid} not ready after {timeout:.0f}s: {obj.get('status')}")
-            self.sleep(15)
-
-    # ----------------------------------------------------------- object storage
 
     def bucket_zone(self, bucket: str) -> str:
         return self.json("cwobject", "bucket", "get", bucket)["location"]

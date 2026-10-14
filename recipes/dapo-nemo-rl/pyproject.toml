@@ -7,13 +7,13 @@ name = "dapo-nemo-rl"
 version = "0.1.0"
 description = "DAPO RL on Qwen2.5-Math-7B: NeMo-RL on SUNK, rollouts from CoreWeave Dedicated Inference, NeMo-Gym in CoreWeave sandboxes."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.12,<3.14"
 license = { text = "Apache-2.0" }
 # The host only launches the run. NeMo-RL and NeMo-Gym are installed on SUNK and in the
-# Gym sandbox; boto3 deletes the run's objects at the end.
+# Gym sandbox. cwtrain manages the inference gateway and deployment.
 dependencies = [
     "cwsandbox==1.19.0",
-    "boto3>=1.34",
+    "cwtrain==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +29,7 @@ packages = ["dapo_nemo_rl"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

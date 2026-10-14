@@ -90,8 +90,6 @@ policy:
       base_url: ${oc.env:INFERENCE_BASE_URL}  # https://<gateway>/v1
       model: ${oc.env:INFERENCE_MODEL}
       deployment_id: ${oc.env:HOTLOAD_DEPLOYMENT_ID}
-      bucket: ${oc.env:HOTLOAD_BUCKET}
-      path_prefix: ${oc.env:HOTLOAD_PATH_PREFIX}
       run_id: ${oc.env:DAPO_RUN_TAG}  # hot-load identities are <run_id>-v000001, ...
       token_env: COREWEAVE_API_TOKEN
       max_model_len: ${policy.max_total_sequence_length}
