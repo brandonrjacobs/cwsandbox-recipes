@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {app: web}
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: nginx
+          image: nginx:1.28-alpine
+          command: [sh, -ec]
+          args:
+            - 'echo "Hello from ${NODE_NAME}" > /usr/share/nginx/html/index.html; exec nginx -g "daemon off;"'
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet: {path: /, port: 80}
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  selector: {app: web}
+  ports:
+    - port: 80
+      targetPort: 80
