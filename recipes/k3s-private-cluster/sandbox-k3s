@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+RECIPE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$RECIPE_DIR/.env" ]; then
+    exec uv run --frozen --project "$RECIPE_DIR" --env-file "$RECIPE_DIR/.env" python "$RECIPE_DIR/cluster.py" "$@"
+fi
+exec uv run --frozen --project "$RECIPE_DIR" python "$RECIPE_DIR/cluster.py" "$@"
