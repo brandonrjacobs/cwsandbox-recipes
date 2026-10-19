@@ -63,6 +63,8 @@ def main(run_dir: Path, overrides: list[str]) -> int:
     cache = run_dir.parent.parent / "cache"
     os.environ.update(read_env_file(run_dir / "secrets.env"))
     os.environ["PYTHONPATH"] = "/workspace"
+    # Weight exports stay in this run's directory: /work is shared by all runs of a user.
+    os.environ["REFIT_EXPORT_DIR"] = "/job/refit"
     (cache / "work").mkdir(parents=True, exist_ok=True)
 
     log(f"sunk: node {os.uname().nodename}, run dir {run_dir}")

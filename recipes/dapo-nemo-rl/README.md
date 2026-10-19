@@ -71,7 +71,11 @@ Evaluation and calibration use a second Gym agent, `math_eval_agent`. Its server
 - A CoreWeave sandbox organization with CPU capacity, and permission to create a [managed runner](https://docs.coreweave.com/products/sandboxes/operations/managed-runners).
 - A CoreWeave API access token from the [Tokens page](https://console.coreweave.com/tokens) with access to sandboxes and Inference (hot-load needs the Inference Admin role).
 - [RL Rollouts](https://docs.coreweave.com/products/inference/rl-rollouts) (hot-load) enabled for your organization, and H100 capacity for Dedicated Inference in the gateway zone (default `US-WEST-04A`).
-- A bucket the inference service can read, for example `gradient-hotloading`. Its [bucket policy](https://docs.coreweave.com/products/inference/models#grant-inference-access-to-your-bucket) must let the inference service read the recipe's prefix (default `cookbook/dapo-nemo-rl/`).
+- A bucket for the model and the weight snapshots, for example `gradient-hotloading`. Under the recipe's prefix (default `cookbook/dapo-nemo-rl/`), its [bucket policy](https://docs.coreweave.com/products/inference/models#grant-inference-access-to-your-bucket) must allow:
+  - the inference service to read (`s3:ListBucket`, `s3:GetObject`);
+  - your organization's users to write (`s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`, `s3:AbortMultipartUpload`). The trainer uploads and copies the model and the snapshots with a temporary key of yours, and the launcher deletes them at the end.
+
+  The launcher checks write access when it starts. Without it, the run stops with `SnapshotAccessError` instead of failing with `AccessDenied` about 10 minutes later.
 - `cwic` (logged in), `rsync`, Python 3.12-3.13 and [uv](https://docs.astral.sh/uv/).
 - Optional: a [W&B](https://wandb.ai) API key for metrics.
 
@@ -108,6 +112,7 @@ python -m dapo_nemo_rl.launch --max-num-steps 2
 Expected output (abridged):
 
 ```
+[dapo] storage: temporary access key can write s3://gradient-hotloading/cookbook/dapo-nemo-rl/runs/...
 [dapo] inference: gateway ... ready at https://dapo-nemo-rl-....gw.cwinference.com
 [dapo] gym: sandbox ... requested (CPU)
 [dapo] sunk: job ... submitted (/mnt/data/<you>/dapo-nemo-rl/runs/dapo-nemo-rl-...)

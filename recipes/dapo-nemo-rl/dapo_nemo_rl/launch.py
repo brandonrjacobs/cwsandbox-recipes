@@ -116,6 +116,15 @@ def s3_client(key: dict[str, str], region: str) -> Any:
     return s3_client(region_name=region, aws_access_key_id=key["accessKeyID"], aws_secret_access_key=key["secretKey"])
 
 
+def check_write(s3: Any, bucket: str, prefix: str) -> None:
+    """Fail early if the storage key cannot list, read and write under ``prefix``.
+
+    cwtrain's check starts and aborts a multipart upload, so it leaves nothing behind."""
+    from cwtrain.hotload.snapshot import check_snapshot_access
+
+    check_snapshot_access(s3, bucket, prefix)
+
+
 class Launcher:
     """Owns one run. ``sdk`` is the ``cwsandbox`` module (fakes in tests)."""
 
@@ -156,7 +165,12 @@ class Launcher:
     def create_storage_key(self) -> None:
         self.bucket_zone = self.inference.bucket_zone(self.config.bucket)
         self.access_key = self.inference.create_access_key(self.run_tag, self.config.max_lifetime_seconds + 3600)
-        log(f"storage: temporary access key for s3://{self.config.bucket}/{self.run_prefix}")
+        uri = f"s3://{self.config.bucket}/{self.run_prefix}"
+        s3 = self.s3_factory(self.access_key, self.bucket_zone)
+        # A new key can take a few seconds to work; a missing permission keeps failing.
+        retry(lambda: check_write(s3, self.config.bucket, self.run_prefix) or True, f"write access to {uri}",
+              timeout=60, every=10)  # fmt: skip
+        log(f"storage: temporary access key can write {uri}")
 
     def create_gateway(self) -> None:
         self.gateway_id, self.endpoint = self.inference.create_gateway(self.run_tag, self.config.deployment.zone)

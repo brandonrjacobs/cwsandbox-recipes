@@ -177,6 +177,21 @@ def _launcher(sunk=None):
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     monkeypatch.setattr(launch.time, "sleep", lambda s: None)
+    monkeypatch.setattr(launch, "check_write", lambda s3, bucket, prefix: None)
+
+
+def test_missing_write_access_stops_before_anything_is_created(monkeypatch):
+    def denied(s3, bucket, prefix):
+        raise PermissionError(f"PutObject denied on s3://{bucket}/{prefix}")
+
+    monkeypatch.setattr(launch, "check_write", denied)
+    monkeypatch.setattr(launch.time, "monotonic", iter(range(0, 10_000, 30)).__next__)
+    launcher, sdk = _launcher()
+    with pytest.raises(RuntimeError, match="write access"):
+        launcher.run()
+    calls = launcher.inference.calls
+    assert not sdk.created and not any(c[0] == "gateway" for c in calls if isinstance(c, tuple))
+    assert ("revoke", "AK") in calls  # the temporary key is still revoked
 
 
 def test_run_wires_gym_sunk_job_and_deployment():
